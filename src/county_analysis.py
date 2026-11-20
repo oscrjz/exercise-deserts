@@ -11,7 +11,7 @@ Usage:
 """
 
 import argparse
-
+from scipy import stats
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -29,6 +29,30 @@ def partial_corr(df: pd.DataFrame, x: str, y: str, controls: list[str]) -> float
     resid = lambda v: v - Z @ np.linalg.lstsq(Z, v, rcond=None)[0]
     return float(np.corrcoef(resid(d[x].to_numpy()), resid(d[y].to_numpy()))[0, 1])
 
+
+
+def ols(df: pd.DataFrame, y: str, xs: list[str]) -> tuple[pd.DataFrame, float, int]:
+    """Ordinary least squares regression of y on xs.
+
+    Returns a table with one row per predictor (slope, standard error,
+    p-value, standardized beta), plus R-squared and the number of counties used.
+    The standardized beta is the slope after turning every variable into
+    z-scores, so predictors measured in different units can be compared.
+    """
+    d = df[[y, *xs]].dropna()
+    X = np.column_stack([np.ones(len(d)), d[xs].to_numpy()])
+    Y = d[y].to_numpy()
+    b = np.linalg.lstsq(X, Y, rcond=None)[0]
+    resid = Y - X @ b
+    n, k = X.shape
+    se = np.sqrt(np.diag(resid @ resid / (n - k) * np.linalg.inv(X.T @ X)))
+    p = 2 * stats.t.sf(np.abs(b / se), df=n - k)
+    r2 = 1 - (resid @ resid) / ((Y - Y.mean()) @ (Y - Y.mean()))
+    beta = b[1:] * d[xs].std().to_numpy() / Y.std()
+    table = pd.DataFrame({"slope": b[1:], "std_error": se[1:], "p_value": p[1:],
+                          "std_beta": beta}, index=xs)
+    return table, float(r2), n
+    
 
 def ordinal(n: int) -> str:
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
@@ -61,6 +85,20 @@ def main():
                          partial_corr(df, "exercise_access", outcome, config.CONTROLS), 2)})
     print(pd.DataFrame(rows).to_string(index=False), "\n")
 
+# Linear regression: outcome = b0 + b1*access + b2*income + b3*uninsured.
+    # Income is in $1,000s so its slope reads as "per $1,000 more income".
+    df["income_k"] = df["median_income"] / 1000
+    predictors = ["exercise_access", "income_k", "uninsured"]
+    print("Linear regression: outcome ~ access + income ($1,000s) + uninsured")
+    for outcome in config.OUTCOMES:
+        table, r2, n = ols(df, outcome, predictors)
+        print(f"\n{outcome}  (R-squared = {r2:.2f}, counties = {n:,})")
+        print(table.round({"slope": 3, "std_error": 3, "std_beta": 2})
+                   .assign(p_value=table["p_value"].map(lambda p: f"{p:.3g}"))
+                   .to_string())
+    print()
+
+    
     # Scatterplots: access vs each outcome
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
     for ax, outcome in zip(axes, config.OUTCOMES):
