@@ -122,13 +122,91 @@ def access_vs_outcomes(df: pd.DataFrame):
     plt.close(fig)
 
 
+def access_groups_boxplot(df: pd.DataFrame):
+    """Graph 3: counties split into thirds by access, health compared across the thirds."""
+    names = {"inactivity": "Physically inactive", "obesity": "Obese", "diabetes": "Diabetic"}
+    groups = ["Low", "Medium", "High"]
+    shades = ["#9ec5f4", "#5a9be6", "#1d5fb0"]  # light to dark blue = low to high access
+    d = df.dropna(subset=["exercise_access"]).copy()
+    d["group"] = pd.qcut(d["exercise_access"], 3, labels=groups)
+    cuts = d["exercise_access"].quantile([1 / 3, 2 / 3])
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+    fig.subplots_adjust(top=0.78, left=0.05, right=0.98, bottom=0.12, wspace=0.25)
+
+    for ax, outcome in zip(axes, config.OUTCOMES):
+        data = [d.loc[d["group"] == g, outcome].dropna() for g in groups]
+        box = ax.boxplot(data, patch_artist=True, widths=0.6, showfliers=False,
+                         medianprops=dict(color=INK, linewidth=2),
+                         whiskerprops=dict(color=MUTED), capprops=dict(color=MUTED))
+        for patch, shade in zip(box["boxes"], shades):
+            patch.set_facecolor(shade)
+            patch.set_edgecolor("white")
+        for i, values in enumerate(data, start=1):
+            ax.text(i + 0.33, values.median(), f"{values.median():.1f}",
+                    va="center", fontsize=11, color=INK)
+
+        ax.set_xticks([1, 2, 3], [f"{g}\naccess" for g in groups])
+        ax.set_title(f"{names[outcome]} adults, %", loc="left", fontsize=13, color=INK, pad=10)
+        ax.grid(axis="y", color=GRID, linewidth=0.8)
+        ax.set_axisbelow(True)
+
+    titles(fig, "Low-access counties have higher inactivity, obesity, and diabetes",
+           f"Counties split into thirds by access: Low under {cuts.iloc[0]:.0f}%, "
+           f"Medium {cuts.iloc[0]:.0f}-{cuts.iloc[1]:.0f}%, High over {cuts.iloc[1]:.0f}%. "
+           "Line in each box = median county.")
+    fig.savefig(OUT / "03_access_groups_boxplot.png")
+    plt.close(fig)
+
+def partial_corr(df: pd.DataFrame, x: str, y: str, controls: list[str]) -> float:
+    """Correlation between x and y after removing the linear effect of the controls."""
+    d = df[[x, y, *controls]].dropna()
+    Z = np.column_stack([np.ones(len(d)), d[controls].to_numpy()])
+    resid = lambda v: v - Z @ np.linalg.lstsq(Z, v, rcond=None)[0]
+    return float(np.corrcoef(resid(d[x].to_numpy()), resid(d[y].to_numpy()))[0, 1])
+
+
+def correlation_before_after(df: pd.DataFrame):
+    """Graph 4: the access-health link before and after controlling for income and uninsured."""
+    names = {"inactivity": "Inactivity", "obesity": "Obesity", "diabetes": "Diabetes"}
+    before = [df["exercise_access"].corr(df[o]) for o in config.OUTCOMES]
+    after = [partial_corr(df, "exercise_access", o, config.CONTROLS) for o in config.OUTCOMES]
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+    fig.subplots_adjust(top=0.78, left=0.07, right=0.97, bottom=0.12)
+
+    # Bars show the strength of the link (size of r); all the r values are negative.
+    x = np.arange(len(config.OUTCOMES))
+    w = 0.36
+    b1 = ax.bar(x - w / 2 - 0.01, [abs(v) for v in before], w, color="#b8b7b2", label="Before controlling")
+    b2 = ax.bar(x + w / 2 + 0.01, [abs(v) for v in after], w, color=BLUE, label="After controlling for income and uninsured")
+    for bars, values in ((b1, before), (b2, after)):
+        for bar, v in zip(bars, values):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.008,
+                    f"r = {v:.2f}", ha="center", fontsize=12, color=INK)
+
+    ax.set_xticks(x, [names[o] for o in config.OUTCOMES], fontsize=13, color=INK)
+    ax.set_ylabel("Strength of link with access (size of r)")
+    ax.set_ylim(0, 0.5)
+    ax.grid(axis="y", color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.legend(frameon=False, loc="upper right", fontsize=12)
+
+    titles(fig, "Once income is accounted for, the access-health link shrinks by more than half",
+           "Correlation of exercise access with each outcome, US counties. "
+           "All are negative: more access, lower rates.")
+    fig.savefig(OUT / "04_correlation_before_after.png")
+    plt.close(fig)
+    
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(config.PROCESSED_DIR / "chr_counties.csv", dtype={"fips": str})
     access_histogram(df)
     access_vs_outcomes(df)
+    access_groups_boxplot(df)
+    correlation_before_after(df)
     print(f"Figures saved to {OUT.relative_to(config.ROOT)}/")
-
+    
 
 if __name__ == "__main__":
     main()
